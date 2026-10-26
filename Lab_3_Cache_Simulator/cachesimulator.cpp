@@ -80,45 +80,163 @@ class cache
     // some cache configuration parameters.
     // cache L1 or L2
 public:
-    int num_set{};
-    int associativity{};
-    int block_size{};
-    int index_bits{};
-    int offset_bits{};
-    vector<set> sets;
-    cache(int b_size, int assoc, int c_size_kib)
+    int l1_num_set{};
+    int l1_associativity{};
+    int l1_index_bits{};
+    int l1_offset_bits{};
+
+    int l2_num_set{};
+    int l2_associativity{};
+    int l2_index_bits{};
+    int l2_offset_bits{};
+
+    vector<set> L1_sets;
+    vector<set> L2_sets;
+    cache(int l1_b_size, int l1_assoc, int l1_size_kib,
+          int l2_b_size, int l2_assoc, int l2_size_kib)
     {
         // initialize the cache according to cache parameters
-        block_size = b_size;
-        int total_bytes = c_size_kib * 1024;
+        int l1_total_bytes = l1_size_kib * 1024;
 
-        if (assoc == 0)
+        if (l1_assoc == 0)
         {
-            num_set = 1;
-            associativity = total_bytes / block_size;
+            l1_num_set = 1;
+            l1_associativity = l1_total_bytes / l1_b_size;
         }
         else
         {
-            associativity = assoc;
-            num_set = total_bytes / (block_size * associativity);
+            l1_associativity = l1_assoc;
+            l1_num_set = l1_total_bytes / (l1_b_size * l1_associativity);
         }
-        offset_bits = (int)log2(block_size);
-        index_bits = (int)log2(num_set);
+        l1_offset_bits = (int)log2(l1_b_size);
+        l1_index_bits = (int)log2(l1_num_set);
 
-        sets.resize(num_set);
+        L1_sets.resize(l1_num_set);
 
-        for (int i{}; i < num_set; i++)
+        for (int i{}; i < l1_num_set; i++)
         {
-            sets[i].blocks.resize(associativity);
-            for (int j{}; j < associativity; j++)
+            L1_sets[i].blocks.resize(l1_associativity);
+            for (int j{}; j < l1_associativity; j++)
             {
-                sets[i].blocks[j].valid = false;
-                sets[i].blocks[j].dirty = false;
-                sets[i].blocks[j].tag = 0;
-                sets[i].blocks[j].full_addr = 0;
+                L1_sets[i].blocks[j].valid = false;
+                L1_sets[i].blocks[j].dirty = false;
+                L1_sets[i].blocks[j].tag = 0;
+                L1_sets[i].blocks[j].full_addr = 0;
             }
-            sets[i].evict_counter = 0;
+            L1_sets[i].evict_counter = 0;
         }
+        int l2_total_bytes = l2_size_kib * 1024;
+        if (l2_assoc == 0)
+        {
+            l2_num_set = 1;
+            l2_associativity = l2_total_bytes / l2_b_size;
+        }
+        else
+        {
+            l2_associativity = l2_assoc;
+            l2_num_set = l2_total_bytes / (l2_b_size * l2_associativity);
+        }
+        l2_offset_bits = (int)log2(l2_b_size);
+        l2_index_bits = (int)log2(l2_num_set);
+        L2_sets.resize(l2_num_set);
+        for (int i{}; i < l2_num_set; i++)
+        {
+            L2_sets[i].blocks.resize(l2_associativity);
+            for (int j{}; j < l2_associativity; j++)
+            {
+                L2_sets[i].blocks[j].valid = false;
+                L2_sets[i].blocks[j].dirty = false;
+                L2_sets[i].blocks[j].tag = 0;
+                L2_sets[i].blocks[j].full_addr = 0;
+            }
+            L2_sets[i].evict_counter = 0;
+        }
+    }
+    void get_tag_index_L1(unsigned int addr, unsigned int &tag, unsigned int &idx)
+    {
+        if (l1_num_set <= 1)
+        {
+            idx = 0;
+        }
+        else
+        {
+            idx = (addr >> l1_offset_bits) & ((1ULL << l1_index_bits) - 1);
+        }
+        int shift = l1_offset_bits + l1_index_bits;
+        tag = (shift >= 32) ? 0 : (addr >> shift);
+    }
+
+    void get_tag_index_L2(unsigned int addr, unsigned int &tag, unsigned int &idx)
+    {
+        if (l2_num_set <= 1)
+        {
+            idx = 0;
+        }
+        else
+        {
+            idx = (addr >> l2_offset_bits) & ((1ULL << l2_index_bits) - 1);
+        }
+        int shift = l2_offset_bits + l2_index_bits;
+        tag = (shift >= 32) ? 0 : (addr >> shift);
+    }
+
+    bool insert_L2(unsigned int addr, bool is_dirty)
+    {
+        unsigned int tag2{};
+        unsigned int idx2{};
+        get_tag_index_L2(addr, tag2, idx2);
+        for (int i{}; i < l2_associativity; i++)
+        {
+            if (!L2_sets[idx2].blocks[i].valid)
+            {
+                L2_sets[idx2].blocks[i].valid = true;
+                L2_sets[idx2].blocks[i].dirty = is_dirty;
+                L2_sets[idx2].blocks[i].tag = tag2;
+                L2_sets[idx2].blocks[i].full_addr = addr;
+                return false;
+            }
+        }
+
+        int evict_way = L2_sets[idx2].evict_counter;
+        bool mem_write = L2_sets[idx2].blocks[evict_way].dirty;
+
+        L2_sets[idx2].blocks[evict_way].valid = true;
+        L2_sets[idx2].blocks[evict_way].dirty = is_dirty;
+        L2_sets[idx2].blocks[evict_way].tag = tag2;
+        L2_sets[idx2].blocks[evict_way].full_addr = addr;
+        L2_sets[idx2].evict_counter = (evict_way + 1) % l2_associativity;
+        return mem_write;
+    }
+
+    bool insert_L1(unsigned int addr, bool is_dirty)
+    {
+        unsigned int tag1{};
+        unsigned int idx1{};
+        get_tag_index_L1(addr, tag1, idx1);
+
+        for (int i{}; i < l1_associativity; i++)
+        {
+            if (!L1_sets[idx1].blocks[i].valid)
+            {
+                L1_sets[idx1].blocks[i].valid = true;
+                L1_sets[idx1].blocks[i].dirty = is_dirty;
+                L1_sets[idx1].blocks[i].tag = tag1;
+                L1_sets[idx1].blocks[i].full_addr = addr;
+                return false;
+            }
+        }
+
+        int evict_way = L1_sets[idx1].evict_counter;
+        unsigned int victim_addr = L1_sets[idx1].blocks[evict_way].full_addr;
+        bool victim_dirty = L1_sets[idx1].blocks[evict_way].dirty;
+
+        L1_sets[idx1].blocks[evict_way].valid = true;
+        L1_sets[idx1].blocks[evict_way].dirty = is_dirty;
+        L1_sets[idx1].blocks[evict_way].tag = tag1;
+        L1_sets[idx1].blocks[evict_way].full_addr = addr;
+        L1_sets[idx1].evict_counter = (evict_way + 1) % l1_associativity;
+
+        return insert_L2(victim_addr, victim_dirty);
     }
 
     auto write(auto addr)
@@ -132,6 +250,20 @@ public:
 
         return WH or WM
         */
+        unsigned int u_addr = addr;
+        unsigned int tag{};
+        unsigned int idx{};
+        get_tag_index_L1(u_addr, tag, idx);
+
+        for (int i{}; i < l1_associativity; i++)
+        {
+            if (L1_sets[idx].blocks[i].valid && L1_sets[idx].blocks[i].tag == tag)
+            {
+                L1_sets[idx].blocks[i].dirty = true;
+                return WH;
+            }
+        }
+        return WM;
     }
 
     auto writeL2(auto addr)
@@ -145,6 +277,20 @@ public:
 
         return {WM or WH, WRITEMEM or NOWRITEMEM}
         */
+        unsigned int u_addr = addr;
+        unsigned int tag{};
+        unsigned int idx{};
+        get_tag_index_L2(u_addr, tag, idx);
+
+        for (int i{}; i < l2_associativity; i++)
+        {
+            if (L2_sets[idx].blocks[i].valid && L2_sets[idx].blocks[i].tag == tag)
+            {
+                L2_sets[idx].blocks[i].dirty = true;
+                return std::make_pair(WH, NOWRITEMEM);
+            }
+        }
+        return std::make_pair(WM, WRITEMEM);
     }
 
     auto readL1(auto addr)
@@ -157,6 +303,20 @@ public:
 
         return RH or RM
         */
+        unsigned int u_addr = addr;
+        unsigned int tag{};
+        unsigned int idx{};
+
+        get_tag_index_L1(u_addr, tag, idx);
+
+        for (int i{}; i < l1_associativity; i++)
+        {
+            if (L1_sets[idx].blocks[i].valid && L1_sets[idx].blocks[i].tag == tag)
+            {
+                return RH;
+            }
+        }
+        return RM;
     }
 
     auto readL2(auto addr)
@@ -175,30 +335,51 @@ public:
 
         return {RM or RH, WRITEMEM or NOWRITEMEM}
         */
+        unsigned int u_addr = addr;
+        unsigned int tag2{};
+        unsigned int idx2{};
+        get_tag_index_L2(u_addr, tag2, idx2);
+
+        int l2_state{RM};
+        bool is_dirty{};
+
+        for (int i{}; i < l2_associativity; i++)
+        {
+            if (L2_sets[idx2].blocks[i].valid && L2_sets[idx2].blocks[i].tag == tag2)
+            {
+                l2_state = RH;
+                is_dirty = L2_sets[idx2].blocks[i].dirty;
+                L2_sets[idx2].blocks[i].valid = false;
+                break;
+            }
+        }
+
+        bool mem_write = insert_L1(u_addr, is_dirty);
+        return std::make_pair(l2_state, mem_write ? WRITEMEM : NOWRITEMEM);
     }
 };
 
-// Tips: another example:
-class CacheSystem
-{
-    Cache L1;
-    Cache L2;
+// // Tips: another example:
+// class CacheSystem
+// {
+//     Cache L1;
+//     Cache L2;
 
-public:
-    int L1AcceState, L2AcceState, MemAcceState;
-    auto read(auto addr) {};
-    auto write(auto addr) {};
-};
-class Cache
-{
-    set *CacheSet;
+// public:
+//     int L1AcceState, L2AcceState, MemAcceState;
+//     auto read(auto addr) {};
+//     auto write(auto addr) {};
+// };
+// class Cache
+// {
+//     set *CacheSet;
 
-public:
-    auto read_access(auto addr) {};
-    auto write_access(auto addr) {};
-    auto check_exist(auto addr) {};
-    auto evict(auto addr) {};
-};
+// public:
+//     auto read_access(auto addr) {};
+//     auto write_access(auto addr) {};
+//     auto check_exist(auto addr) {};
+//     auto evict(auto addr) {};
+// };
 /*********************************** ↑↑↑ Todo: Implement by you ↑↑↑ ******************************************/
 
 int main(int argc, char *argv[])
@@ -240,8 +421,8 @@ int main(int argc, char *argv[])
         printf("please test with the same block size\n");
         return 1;
     }
-    // cache c1(cacheconfig.L1blocksize, cacheconfig.L1setsize, cacheconfig.L1size,
-    //          cacheconfig.L2blocksize, cacheconfig.L2setsize, cacheconfig.L2size);
+    cache c1(cacheconfig.L1blocksize, cacheconfig.L1setsize, cacheconfig.L1size,
+             cacheconfig.L2blocksize, cacheconfig.L2setsize, cacheconfig.L2size);
 
     int L1AcceState = NA;          // L1 access state variable, can be one of NA, RH, RM, WH, WM;
     int L2AcceState = NA;          // L2 access state variable, can be one of NA, RH, RM, WH, WM;
@@ -276,6 +457,18 @@ int main(int argc, char *argv[])
                 //     L2AcceState, MemAcceState = cache.readL2(addr); // if L1 read miss, read L2
                 // }
                 // else{ ... }
+                L1AcceState = c1.readL1(addr);
+                if (L1AcceState == RM)
+                {
+                    auto result = c1.readL2(addr);
+                    L2AcceState = result.first;
+                    MemAcceState = result.second;
+                }
+                else
+                {
+                    L2AcceState = NA;
+                    MemAcceState = NOWRITEMEM;
+                }
             }
             else
             { // a Write request
@@ -290,6 +483,18 @@ int main(int argc, char *argv[])
                 //     L2AcceState, MemAcceState = cache.writeL2(addr);
                 // }
                 // else if(){...}
+                L1AcceState = c1.write(addr);
+                if (L1AcceState == WM)
+                {
+                    auto result = c1.writeL2(addr);
+                    L2AcceState = result.first;
+                    MemAcceState = result.second;
+                }
+                else
+                {
+                    L2AcceState = NA;
+                    MemAcceState = NOWRITEMEM;
+                }
             }
             /*********************************** ↑↑↑ Todo: Implement by you ↑↑↑ ******************************************/
 
