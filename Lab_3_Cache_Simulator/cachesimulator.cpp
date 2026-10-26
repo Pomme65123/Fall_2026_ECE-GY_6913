@@ -21,12 +21,12 @@ Offset Bits: the offset field is used to determine which byte in the block is be
 #include <string>
 #include <vector>
 using namespace std;
-//access state:
-#define NA 0 // no action
-#define RH 1 // read hit
-#define RM 2 // read miss
-#define WH 3 // Write hit
-#define WM 4 // write miss
+// access state:
+#define NA 0         // no action
+#define RH 1         // read hit
+#define RM 2         // read miss
+#define WH 3         // Write hit
+#define WM 4         // write miss
 #define NOWRITEMEM 5 // no write to memory
 #define WRITEMEM 6   // write to memory
 
@@ -53,7 +53,12 @@ A single cache block:
 struct CacheBlock
 {
     // we don't actually need to allocate space for data, because we only need to simulate the cache action
-    // or else it would have looked something like this: vector<number of bytes> Data; 
+    // or else it would have looked something like this: vector<number of bytes> Data;
+
+    bool valid{};
+    bool dirty{};
+    unsigned int tag{};
+    unsigned int full_addr{};
 };
 
 /*
@@ -63,8 +68,10 @@ A CacheSet:
 */
 struct set
 {
-    // tips: 
-    // Associativity: eg. resize to 4-ways set associative cache    
+    // tips:
+    // Associativity: eg. resize to 4-ways set associative cache
+    vector<CacheBlock> blocks;
+    int evict_counter{};
 };
 
 // You can design your own data structure for L1 and L2 cache; just an example here
@@ -73,11 +80,49 @@ class cache
     // some cache configuration parameters.
     // cache L1 or L2
 public:
-    cache(){
+    int num_set{};
+    int associativity{};
+    int block_size{};
+    int index_bits{};
+    int offset_bits{};
+    vector<set> sets;
+    cache(int b_size, int assoc, int c_size_kib)
+    {
         // initialize the cache according to cache parameters
+        block_size = b_size;
+        int total_bytes = c_size_kib * 1024;
+
+        if (assoc == 0)
+        {
+            num_set = 1;
+            associativity = total_bytes / block_size;
+        }
+        else
+        {
+            associativity = assoc;
+            num_set = total_bytes / (block_size * associativity);
+        }
+        offset_bits = (int)log2(block_size);
+        index_bits = (int)log2(num_set);
+
+        sets.resize(num_set);
+
+        for (int i{}; i < num_set; i++)
+        {
+            sets[i].blocks.resize(associativity);
+            for (int j{}; j < associativity; j++)
+            {
+                sets[i].blocks[j].valid = false;
+                sets[i].blocks[j].dirty = false;
+                sets[i].blocks[j].tag = 0;
+                sets[i].blocks[j].full_addr = 0;
+            }
+            sets[i].evict_counter = 0;
+        }
     }
 
-    auto write(auto addr){
+    auto write(auto addr)
+    {
         /*
         step 1: select the set in our L1 cache using set index bits
         step 2: iterate through each way in the current set
@@ -89,7 +134,8 @@ public:
         */
     }
 
-    auto writeL2(auto addr){
+    auto writeL2(auto addr)
+    {
         /*
         step 1: select the set in our L2 cache using set index bits
         step 2: iterate through each way in the current set
@@ -101,7 +147,8 @@ public:
         */
     }
 
-    auto readL1(auto addr){
+    auto readL1(auto addr)
+    {
         /*
         step 1: select the set in our L1 cache using set index bits
         step 2: iterate through each way in the current set
@@ -112,7 +159,8 @@ public:
         */
     }
 
-    auto readL2(auto addr){
+    auto readL2(auto addr)
+    {
         /*
         step 1: select the set in our L2 cache using set index bits
         step 2: iterate through each way in the current set
@@ -135,25 +183,23 @@ class CacheSystem
 {
     Cache L1;
     Cache L2;
+
 public:
     int L1AcceState, L2AcceState, MemAcceState;
-    auto read(auto addr){};
-    auto write(auto addr){};
+    auto read(auto addr) {};
+    auto write(auto addr) {};
 };
 class Cache
 {
-    set * CacheSet;
+    set *CacheSet;
+
 public:
-    auto read_access(auto addr){};
-    auto write_access(auto addr){};
-    auto check_exist(auto addr){};
-    auto evict(auto addr){};
+    auto read_access(auto addr) {};
+    auto write_access(auto addr) {};
+    auto check_exist(auto addr) {};
+    auto evict(auto addr) {};
 };
 /*********************************** ↑↑↑ Todo: Implement by you ↑↑↑ ******************************************/
-
-
-
-
 
 int main(int argc, char *argv[])
 {
@@ -162,16 +208,16 @@ int main(int argc, char *argv[])
     ifstream cache_params;
     string dummyLine;
     cache_params.open(argv[1]);
-    while (!cache_params.eof())                   // read config file
+    while (!cache_params.eof()) // read config file
     {
-        cache_params >> dummyLine;                // L1:
-        cache_params >> cacheconfig.L1blocksize;  // L1 Block size
-        cache_params >> cacheconfig.L1setsize;    // L1 Associativity
-        cache_params >> cacheconfig.L1size;       // L1 Cache Size
-        cache_params >> dummyLine;                // L2:
-        cache_params >> cacheconfig.L2blocksize;  // L2 Block size
-        cache_params >> cacheconfig.L2setsize;    // L2 Associativity
-        cache_params >> cacheconfig.L2size;       // L2 Cache Size
+        cache_params >> dummyLine;               // L1:
+        cache_params >> cacheconfig.L1blocksize; // L1 Block size
+        cache_params >> cacheconfig.L1setsize;   // L1 Associativity
+        cache_params >> cacheconfig.L1size;      // L1 Cache Size
+        cache_params >> dummyLine;               // L2:
+        cache_params >> cacheconfig.L2blocksize; // L2 Block size
+        cache_params >> cacheconfig.L2setsize;   // L2 Associativity
+        cache_params >> cacheconfig.L2size;      // L2 Cache Size
     }
     ifstream traces;
     ofstream tracesout;
@@ -185,22 +231,20 @@ int main(int argc, char *argv[])
     unsigned int addr;     // the address from the memory trace store in unsigned int;
     bitset<32> accessaddr; // the address from the memory trace store in the bitset;
 
-
-
-
-/*********************************** ↓↓↓ Todo: Implement by you ↓↓↓ ******************************************/
+    /*********************************** ↓↓↓ Todo: Implement by you ↓↓↓ ******************************************/
     // Implement by you:
     // initialize the hirearch cache system with those configs
     // probably you may define a Cache class for L1 and L2, or any data structure you like
-    if (cacheconfig.L1blocksize!=cacheconfig.L2blocksize){
+    if (cacheconfig.L1blocksize != cacheconfig.L2blocksize)
+    {
         printf("please test with the same block size\n");
         return 1;
     }
     // cache c1(cacheconfig.L1blocksize, cacheconfig.L1setsize, cacheconfig.L1size,
     //          cacheconfig.L2blocksize, cacheconfig.L2setsize, cacheconfig.L2size);
 
-    int L1AcceState = NA; // L1 access state variable, can be one of NA, RH, RM, WH, WM;
-    int L2AcceState = NA; // L2 access state variable, can be one of NA, RH, RM, WH, WM;
+    int L1AcceState = NA;          // L1 access state variable, can be one of NA, RH, RM, WH, WM;
+    int L2AcceState = NA;          // L2 access state variable, can be one of NA, RH, RM, WH, WM;
     int MemAcceState = NOWRITEMEM; // Main Memory access state variable, can be either NA or WH;
 
     if (traces.is_open() && tracesout.is_open())
@@ -209,7 +253,8 @@ int main(int argc, char *argv[])
         { // read mem access file and access Cache
 
             istringstream iss(line);
-            if (!(iss >> accesstype >> xaddr)){
+            if (!(iss >> accesstype >> xaddr))
+            {
                 break;
             }
             stringstream saddr(xaddr);
@@ -217,14 +262,14 @@ int main(int argc, char *argv[])
             accessaddr = bitset<32>(addr);
 
             // access the L1 and L2 Cache according to the trace;
-            if (accesstype.compare("R") == 0)  // a Read request
+            if (accesstype.compare("R") == 0) // a Read request
             {
                 // Implement by you:
                 //   read access to the L1 Cache,
                 //   and then L2 (if required),
                 //   update the access state variable;
                 //   return: L1AcceState L2AcceState MemAcceState
-                
+
                 // For example:
                 // L1AcceState = cache.readL1(addr); // read L1
                 // if(L1AcceState == RM){
@@ -232,11 +277,12 @@ int main(int argc, char *argv[])
                 // }
                 // else{ ... }
             }
-            else{ // a Write request
-                // Implement by you:
-                //   write access to the L1 Cache, or L2 / main MEM,
-                //   update the access state variable;
-                //   return: L1AcceState L2AcceState
+            else
+            { // a Write request
+              // Implement by you:
+              //   write access to the L1 Cache, or L2 / main MEM,
+              //   update the access state variable;
+              //   return: L1AcceState L2AcceState
 
                 // For example:
                 // L1AcceState = cache.writeL1(addr);
@@ -245,10 +291,7 @@ int main(int argc, char *argv[])
                 // }
                 // else if(){...}
             }
-/*********************************** ↑↑↑ Todo: Implement by you ↑↑↑ ******************************************/
-
-
-
+            /*********************************** ↑↑↑ Todo: Implement by you ↑↑↑ ******************************************/
 
             // Grading: don't change the code below.
             // We will print your access state of each cycle to see if your simulator gives the same result as ours.
